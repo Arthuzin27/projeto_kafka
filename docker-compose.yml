@@ -1,0 +1,78 @@
+# Ambiente da demo: 1 broker Kafka (modo KRaft, sem ZooKeeper) + Kafka UI.
+# Subir com:  docker compose up -d
+
+services:
+  # ---------------------------------------------------------------
+  # Broker Kafka. Em KRaft o mesmo processo é "broker" (guarda as
+  # mensagens) e "controller" (coordena o cluster).
+  # ---------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.1.0
+    container_name: kafka
+    ports:
+      - "9092:9092"   # porta usada pelos scripts Python no seu computador
+    environment:
+      CLUSTER_ID: "demo-pix-kafka-cluster1"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Dois "endereços" para clientes:
+      #  EXTERNO -> localhost:9092 (Python rodando fora do Docker)
+      #  INTERNO -> kafka:29092    (Kafka UI rodando dentro do Docker)
+      KAFKA_LISTENERS: EXTERNO://:9092,INTERNO://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNO://localhost:9092,INTERNO://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNO:PLAINTEXT,INTERNO:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNO
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Com um único broker, tudo tem fator de replicação 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Rebalance começa na hora (bom para a demo)
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Tópicos só existem se forem criados de propósito (pelo kafka-init)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Retenção: guarda as mensagens por 7 dias
+      KAFKA_LOG_RETENTION_HOURS: 168
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # ---------------------------------------------------------------
+  # Container temporário: espera o broker ficar pronto, cria os
+  # tópicos com 3 partições e termina.
+  # ---------------------------------------------------------------
+  kafka-init:
+    image: apache/kafka:4.1.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic transacoes --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic alertas --partitions 3 --replication-factor 1
+        echo "Topicos criados:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe
+    restart: "no"
+
+  # ---------------------------------------------------------------
+  # Kafka UI: interface web em http://localhost:8080
+  # ---------------------------------------------------------------
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.3.0
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      # Se a 8080 estiver ocupada, troque a porta do lado esquerdo
+      # ou suba com:  KAFKA_UI_PORTA=8081 docker compose up -d
+      - "${KAFKA_UI_PORTA:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: pix-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
